@@ -1,0 +1,206 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Proyecto Procesos Estocasticos</title>
+<style>
+  html,body{
+    height:100%;
+    margin:0;
+    background:#111;
+    color:#eee;
+    font-family:system-ui, sans-serif;
+  }
+  .wrap{
+    max-width:840px;
+    margin:0 auto;
+    padding:12px;
+  }
+  #c{
+    width:100%;
+    aspect-ratio:16/10;
+    background:#000;
+    border:1px solid #333;
+    touch-action:none;
+    border-radius:8px;
+  }
+  .bar{
+    display:flex;
+    gap:8px;
+    align-items:center;
+    margin:8px 0;
+  }
+  button{
+    background:#1a1a1a;
+    color:#eee;
+    border:1px solid #333;
+    border-radius:8px;
+    padding:8px 10px;
+    cursor:pointer;
+  }
+  .mono{
+    font-family:ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size:12px;
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="bar">
+    <button id="clear">Limpiar</button>
+    <button id="csv">Descargar CSV</button>
+    <span class="mono" id="info">puntos: 0 · trazos: 0</span>
+  </div>
+  <canvas id="c"></canvas>
+</div>
+
+<script>
+(()=>{
+  const cv   = document.getElementById('c');
+  const cx   = cv.getContext('2d');
+  const info = document.getElementById('info');
+
+  // Datos de la firma
+  let data   = [];
+  let stroke = -1;
+  let down   = false;
+  let t0     = 0;
+
+  // Ajusta el canvas al tamaño del contenedor (retina-friendly)
+  function fit(){
+    const r = cv.getBoundingClientRect();
+    const d = Math.max(1, window.devicePixelRatio || 1);
+    cv.width  = Math.floor(r.width  * d);
+    cv.height = Math.floor(r.height * d);
+    cx.setTransform(d,0,0,d,0,0);
+    draw();
+  }
+  new ResizeObserver(fit).observe(cv);
+  fit();
+
+  // Dibuja todos los trazos
+  function draw(){
+    cx.fillStyle = '#000';
+    cx.fillRect(0,0,cv.width,cv.height);
+
+    cx.strokeStyle = '#e5e7eb';
+    cx.lineCap  = 'round';
+    cx.lineJoin = 'round';
+
+    const by = new Map();
+    for(const p of data){
+      if(!by.has(p.stroke_id)) by.set(p.stroke_id, []);
+      by.get(p.stroke_id).push(p);
+    }
+
+    for(const pts of by.values()){
+      pts.sort((a,b)=>a.t_ms - b.t_ms);
+      cx.beginPath();
+      for(let i=0;i<pts.length;i++){
+        const p = pts[i];
+        cx.lineWidth = 2.5;
+        if(i === 0) cx.moveTo(p.x, p.y);
+        else        cx.lineTo(p.x, p.y);
+      }
+      cx.stroke();
+    }
+  }
+
+  function pos(e){
+    const r = cv.getBoundingClientRect();
+    return { x: e.clientX - r.left, y: e.clientY - r.top };
+  }
+
+  function iso(){
+    return new Date().toISOString();
+  }
+
+  function start(e){
+    e.preventDefault();
+    cv.setPointerCapture(e.pointerId);
+    down = true;
+    stroke++;
+    if(!t0) t0 = performance.now();
+    feed(e);
+  }
+
+  function end(e){
+    e.preventDefault();
+    down = false;
+    cv.releasePointerCapture(e.pointerId);
+    draw();
+  }
+
+  function feed(e){
+    const arr = (e.getCoalescedEvents ? e.getCoalescedEvents() : [e]);
+    const now = performance.now();
+    for(const ev of arr){
+      const p = pos(ev);
+      data.push({
+        // Guardamos internamente con nombres en inglés
+        timestamp_iso: iso(),
+        t_ms: Math.round(now - t0),
+        stroke_id: stroke,
+        x: +p.x.toFixed(2),
+        y: +p.y.toFixed(2),
+        pressure: (typeof ev.pressure === 'number') ? +ev.pressure.toFixed(3) : ''
+      });
+    }
+    info.textContent = `puntos: ${data.length} · trazos: ${stroke+1}`;
+    draw();
+  }
+
+  // Eventos del canvas
+  cv.addEventListener('pointerdown', start, {passive:false});
+  cv.addEventListener('pointermove',  (e)=>{ if(down) feed(e); }, {passive:false});
+  cv.addEventListener('pointerup',    end,   {passive:false});
+  cv.addEventListener('pointercancel',end,   {passive:false});
+  cv.addEventListener('contextmenu', e => e.preventDefault());
+
+  // Botón: Limpiar
+  document.getElementById('clear').onclick = () => {
+    data   = [];
+    stroke = -1;
+    t0     = 0;
+    info.textContent = 'puntos: 0 · trazos: 0';
+    draw();
+  };
+
+  // Botón: Descargar CSV (encabezados en español)
+  document.getElementById('csv').onclick = () => {
+    if(!data.length) return;
+
+    // Encabezados en español para análisis
+    const cols = [
+      'fecha_hora',
+      'tiempo_ms',
+      'id_trazo',
+      'posicion_x_px',
+      'posicion_y_px',
+      'presion'
+    ];
+
+    const esc = v => (v === null || v === undefined ? '' : String(v).replaceAll('"','""'));
+
+    const rows = data.map(r => [
+      `"${esc(r.timestamp_iso)}"`,
+      `"${esc(r.t_ms)}"`,
+      `"${esc(r.stroke_id)}"`,
+      `"${esc(r.x)}"`,
+      `"${esc(r.y)}"`,
+      `"${esc(r.pressure)}"`
+    ].join(','));
+
+    const csv = [cols.join(','), ...rows].join('\n');
+
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(new Blob([csv], {type:'text/csv;charset=utf-8'}));
+    a.download = `firma_${new Date().toISOString().replace(/[:.]/g,'-')}.csv`;
+    a.click();
+    setTimeout(()=>URL.revokeObjectURL(a.href), 1000);
+  };
+})();
+</script>
+</body>
+</html>
